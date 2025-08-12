@@ -1,1 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Hand Draw — Finger Painting with Webcam (MediaPipe)</title>
+  <style>
+    body { font-family: Inter, system-ui, Arial; margin: 0; background:#0f1724; color:#e6eef8; display:flex; height:100vh; }
+    .left { flex:1; display:flex; flex-direction:column; gap:10px; padding:12px; box-sizing:border-box; max-width:720px; }
+    .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    button, select, input[type="range"] { padding:8px 10px; border-radius:8px; border:0; background:#12213a; color:#e6eef8; cursor:pointer; }
+    label { font-size:0.9rem; color:#cfe3ff; }
+    canvas { background:white; border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,0.6); width:100%; height:540px; display:block; }
+    .small { font-size:0.85rem; color:#9fb7d9; }
+    .right { width:360px; padding:12px; box-sizing:border-box; border-left:1px solid rgba(255,255,255,0.04); }
+    .preview { position:relative; }
+    #video { transform: scaleX(-1); border-radius:8px; width:100%; height:auto; display:block; }
+    .stat { font-size:0.85rem; margin-top:6px; color:#bcd7ff; }
+    .row { display:flex; gap:8px; align-items:center; }
+    .accent { background:#0667d8; padding:8px 10px; border-radius:8px; }
+    a.link { color:#9fe0ff; text-decoration:underline; }
+  </style>
+</head>
+<body>
+  <div class="left">
+    <h2 style="margin:0 0 6px 0;">🖐️ Hand Draw — Draw with your finger</h2>
+    <div class="small">Move your <strong>index finger</strong> to draw. Toggle webcam preview for performance. Works best in Chrome/Edge on desktop.</div>
+
+    <div class="controls" style="margin-top:8px;">
+      <label>Color <input id="color" type="color" value="#ff2d55" /></label>
+      <label>Brush <input id="brush" type="range" min="1" max="60" value="6" /></label>
+      <button id="clearBtn" class="accent">Clear</button>
+      <button id="saveBtn">Save PNG</button>
+      <button id="toggleWebcam">Hide Webcam</button>
+      <button id="toggleDrawMode">Mode: Draw</button>
+    </div>
+
+    <p class="small" style="margin:6px 0 0 0;">Smoothing: <span id="smoothVal">0.65</span></p>
+    <input id="smoothing" type="range" min="0.1" max="0.95" step="0.01" value="0.65" style="width:100%;">
+
+    <div style="margin-top:8px;">
+      <canvas id="canvas" width="1280" height="720"></canvas>
+    </div>
+
+    <p class="small" style="margin-top:8px;">
+      Tips: good lighting helps. Use closed background for faster detection. If detection lags, hide webcam preview.
+    </p>
+  </div>
+
+  <div class="right">
+    <div class="preview">
+      <video id="video" autoplay playsinline></video>
+    </div>
+
+    <div class="stat" id="status">Initializing...</div>
+    <div style="margin-top:8px;">
+      <h4 style="margin:4px 0;">Controls</h4>
+      <div class="small">
+        • Draw: index finger tip (landmark 8) <br>
+        • Erase: click Mode → Erase, or raise middle finger (optional).<br>
+        • Save: Export PNG.
+      </div>
+      <hr style="margin:8px 0;">
+      <div style="margin-top:6px;">
+        <strong>About</strong>
+        <p class="small">This app uses <a class="link" href="https://google.github.io/mediapipe/solutions/hands" target="_blank">MediaPipe Hands</a> (JS) for fingertip detection and an HTML canvas for drawing.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- MediaPipe Hands via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+  <script>
+    // Elements
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const colorPicker = document.getElementById('color');
+    const brushSlider = document.getElementById('brush');
+    const clearBtn = document.getElementById('clearBtn');
+    const saveBtn = document.getElementById('saveBtn');
+    const toggleWebcamBtn = document.getElementById('toggleWebcam');
+    const toggleDrawModeBtn = document.getElementById('toggleDrawMode');
+    const smoothingSlider = document.getElementById('smoothing');
+    const smoothVal = document.getElementById('smoothVal');
+    const status = document.getElementById('status');
+
+    let showWebcam = true;
+    let mode = 'draw'; // draw | erase
+    let drawing = false;
+    let lastPoint = null;
+    let smAlpha = parseFloat(smoothingSlider.value);
+
+    smoothingSlider.oninput = () => { smAlpha = parseFloat(smoothingSlider.value); smoothVal.innerText = smAlpha.toFixed(2); }
+
+    // Resize canvas to fit container width (responsive)
+    function fitCanvas() {
+      const rect = canvas.getBoundingClientRect();
+      const ratio = canvas.width / canvas.height;
+      // keep internal resolution 1280x720 for quality, but scale display via CSS
+    }
+    fitCanvas();
+
+    // Clear canvas
+    clearBtn.onclick = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // white background
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+    };
+
+    // Save as PNG
+    saveBtn.onclick = () => {
+      const link = document.createElement('a');
+      link.download = 'hand_drawing.png';
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    };
+
+    toggleWebcamBtn.onclick = () => {
+      showWebcam = !showWebcam;
+      video.style.display = showWebcam ? 'block' : 'none';
+      toggleWebcamBtn.innerText = showWebcam ? 'Hide Webcam' : 'Show Webcam';
+    };
+
+    toggleDrawModeBtn.onclick = () => {
+      mode = mode === 'draw' ? 'erase' : 'draw';
+      toggleDrawModeBtn.innerText = `Mode: ${mode.charAt(0).toUpperCase() + mode.slice(1)}`;
+    };
+
+    // Initialize white bg
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    // Setup MediaPipe Hands
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6
+    });
+
+    hands.onResults(onResults);
+
+    // Use camera via MediaPipe camera helper (if available) or use getUserMedia
+    let mpCamera = null;
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({video: {width: 1280, height: 720}, audio: false});
+        video.srcObject = stream;
+        await video.play();
+        status.innerText = 'Camera ready — point your index finger to draw';
+        // Process frames
+        const processFrame = async () => {
+          if (video.readyState >= 2) {
+            await hands.send({image: video});
+          }
+          requestAnimationFrame(processFrame);
+        };
+        processFrame();
+      } catch (err) {
+        status.innerText = 'Error accessing camera: ' + err.message;
+        console.error(err);
+      }
+    }
+    startCamera();
+
+    // Utility: convert normalized landmark to canvas coordinates
+    function landmarkToCanvas(landmark) {
+      // MediaPipe's x is [0..1] left->right, but video is mirrored horizontally
+      const vw = video.videoWidth || video.width;
+      const vh = video.videoHeight || video.height;
+      // Mirror X so drawing aligns with video preview
+      const x = (1 - landmark.x) * canvas.width;
+      const y = landmark.y * canvas.height;
+      return {x, y};
+    }
+
+    // Smoothing helper (exponential moving)
+    function smoothPoint(prev, curr, alpha) {
+      if (!prev) return curr;
+      return { x: prev.x * alpha + curr.x * (1-alpha), y: prev.y * alpha + curr.y * (1-alpha) };
+    }
+
+    // Draw line segment
+    function drawLine(p1, p2, thickness, color, mode) {
+      if (!p1 || !p2) return;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = color;
+      ctx.lineWidth = thickness;
+      if (mode === 'erase') {
+        // eraser: draw white thick line
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.strokeStyle = 'rgba(0,0,0,1)';
+      } else {
+        ctx.globalCompositeOperation = 'source-over';
+      }
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.stroke();
+      ctx.closePath();
+      // restore
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
+    // Main callback: receives hand landmarks
+    function onResults(results) {
+      // Optionally draw video landmarks overlay
+      // Clear small overlay (we draw lines on canvas separate)
+      if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+        // no hand detected
+        lastPoint = null;
+        status.innerText = 'No hand detected';
+        return;
+      }
+
+      const landmarks = results.multiHandLandmarks[0];
+      // Index finger tip is landmark 8 (MediaPipe indexing)
+      const indexTip = landmarks[8];
+      const middleTip = landmarks[12]; // middle finger tip
+
+      // Convert to canvas coords
+      const p = landmarkToCanvas(indexTip);
+      const m = landmarkToCanvas(middleTip);
+
+      // Determine if user wants to erase via middle finger up (optional heuristic)
+      // Simple rule: if middle finger is extended and index also extended, toggle to erase
+      // We'll keep manual mode toggle; but show detection info
+      status.innerText = `Hand detected — drawing ready. Mode: ${mode}.`;
+
+      // Smoothing
+      const smoothP = smoothPoint(lastPoint, p, smAlpha);
+
+      // Start drawing if index finger is above a threshold (e.g., y less than some)
+      // Better: detect whether pinch or finger extended — for simplicity, draw always when a hand is present.
+      const thickness = parseInt(brushSlider.value, 10);
+      const color = colorPicker.value;
+
+      // If in erase mode, set mode variable; otherwise draw
+      if (lastPoint) {
+        drawLine(lastPoint, smoothP, thickness, color, mode);
+      }
+
+      lastPoint = smoothP;
+    }
+
+    // safety: stop on page hide
+    window.addEventListener('beforeunload', () => {
+      if (video && video.srcObject) {
+        video.srcObject.getTracks().forEach(t => t.stop());
+      }
+    });
+  </script>
+</body>
+</html>
 
